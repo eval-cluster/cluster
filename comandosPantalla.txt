@@ -1,0 +1,308 @@
+sudo apt update
+
+sudo apt install --allow-downgrades -y zlib1g=1:1.3.dfsg-3.1ubuntu2 python3-pip python3-pil python3-smbus python3-dev
+
+sudo pip3 install adafruit-circuitpython-ssd1306 rpi-lgpio --break-system-packages
+
+sudo nano /opt/display_node.py
+
+------------------------------
+import time
+import os
+import socket
+import board
+import busio
+from PIL import Image, ImageDraw, ImageFont
+import adafruit_ssd1306
+
+# Inicializar bus I2C y pantalla OLED (128x64)
+try:
+    i2c = busio.I2C(board.SCL, board.SDA)
+    oled = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c)
+except ValueError:
+    print("Error: No se detecta el bus I2C. Revisa físicamente los pines.")
+    exit(1)
+
+# Limpieza inicial de la pantalla
+oled.fill(0)
+oled.show()
+
+# Crear lienzo limpio para el dibujo en mapa de bits
+image = Image.new("1", (oled.width, oled.height))
+draw = ImageDraw.Draw(image)
+font = ImageFont.load_default()
+
+while True:
+    # --- RECOLECCIÓN DE DATOS (Lecturas nativas en memoria RAM, impacto = 0) ---
+    
+    # Identidad (Detecta automáticamente el Hostname de este worker)
+    hostname = os.uname()[1].upper()
+    modelo_rpi = "RPi 4B" if "master" in hostname.lower() else "RPi 3B+"
+
+    # Obtener IP local de forma ultra-pura (Evita abrir subprocesos de Bash)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("192.168.100.1", 80)) # Apunta al gateway de tu red local
+        ip = s.getsockname()[0]
+        s.close()
+    except:
+        ip = "127.0.0.1"
+
+    # Carga de CPU (Load Average de la ventana de 1 minuto)
+    load1, _, _ = os.getloadavg()
+
+    # Temperatura del procesador leída del archivo directo del SoC
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            temp_raw = int(f.read())
+            temperatura = temp_raw / 1000.0
+    except:
+        temperatura = 0.0
+
+    # Uso de memoria RAM directo de /proc/meminfo
+    mem_total = 0
+    mem_avail = 0
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if "MemTotal" in line:
+                    mem_total = int(line.split()[1])
+                if "MemAvailable" in line:
+                    mem_avail = int(line.split()[1])
+                    break
+        mem_usada_gb = (mem_total - mem_avail) / 1024 / 1024
+        mem_total_gb = mem_total / 1024 / 1024
+    except:
+        mem_usada_gb, mem_total_gb = 0.0, 0.0
+
+    # --- RENDERIZADO GRÁFICO (Diseño estilo Data Center) ---
+    draw.rectangle((0, 0, oled.width, oled.height), outline=0, fill=0)
+
+    # Fila 1: Encabezado con rol dinámico
+    draw.text((0, 0), f"- {hostname}", font=font, fill=255)
+    draw.text((80, 0), f"[{modelo_rpi}]", font=font, fill=255)
+    
+    # Fila 2: Separador visual
+    draw.line((0, 13, 128, 13), fill=255)
+
+    # Fila 3: IP del nodo
+    draw.text((0, 18), f"IP  : {ip}", font=font, fill=255)
+
+    # Fila 4: Métricas de Carga de CPU y Temperatura
+    draw.text((0, 33), f"CPU : Load {load1:.2f}", font=font, fill=255)
+    draw.text((85, 33), f"{temperatura:.1f}C", font=font, fill=255)
+
+    # Fila 5: Estado de la memoria RAM
+    draw.text((0, 48), f"RAM : {mem_usada_gb:.1f} / {mem_total_gb:.1f} GB", font=font, fill=255)
+
+    # Enviar ráfaga de datos a la OLED por el bus I2C
+    oled.image(image)
+    oled.show()
+
+    # Ventana de refresco de 5 segundos para mantener la estabilidad
+    time.sleep(5)
+
+-------------------------
+
+sudo nano /etc/systemd/system/rpi-display.service
+
+-------------------------
+[Unit]
+Description=Servicio de Monitoreo OLED para Nodo K3s
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/display_node.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+--------------------------
+
+# Forzar a Ubuntu a escanear la carpeta de servicios
+sudo systemctl daemon-reload
+
+# Registrar el servicio para que arranque solo en los encendidos del rack
+sudo systemctl enable rpi-display.service
+
+# Iniciar el proceso en segundo plano inmediatamente
+sudo systemctl start rpi-display.service
+
+-----------------------------------------------------------------------------------------------
+
+Comandos Finales:
+
+1. Comandos de Instalación y Dependencias
+Bash
+# Actualiza la lista de paquetes disponibles en los repositorios de Ubuntu/Debian
+
+sudo apt update
+
+# Instala las dependencias del sistema. 
+
+# --allow-downgrades: Permite bajar la versión de zlib1g si es necesario para evitar conflictos de compatibilidad.
+# python3-pip: El gestor de paquetes de Python.
+# python3-pil: Biblioteca para manejo y dibujo de imágenes (Pillow).
+# python3-smbus y python3-dev: Necesarios para la comunicación por el bus I2C y compilar extensiones de Python.
+
+sudo apt install --allow-downgrades -y zlib1g=1:1.3.dfsg-3.1ubuntu2 python3-pip python3-pil python3-smbus python3-dev
+
+# Instala las librerías de Python para controlar la pantalla OLED SSD1306 y los pines GPIO.
+# --break-system-packages: Obliga a pip a instalar las librerías globalmente, ignorando las restricciones modernas de entornos virtuales en Ubuntu/Raspberry Pi OS.
+
+sudo pip3 install adafruit-circuitpython-ssd1306 rpi-lgpio --break-system-packages
+
+# Abre (o crea) el archivo donde se guardará el script de Python usando el editor de texto Nano
+
+sudo nano /opt/display_node.py
+
+2. Script de Python (/opt/display_node.py)
+
+import time      # Para manejar los retrasos (pausas) en el bucle
+import os        # Para leer datos del sistema operativo (hostname, carga, archivos de temperatura)
+import socket    # Para abrir conexiones de red y detectar la IP local
+import board     # Librería de Adafruit para mapear los pines físicos de la Raspberry Pi
+import busio     # Librería de Adafruit para gestionar la comunicación I2C/SPI
+from PIL import Image, ImageDraw, ImageFont # Herramientas para crear y dibujar la interfaz gráfica
+import adafruit_ssd1306 # El driver específico para controlar la pantalla OLED SSD1306
+
+# Inicializar bus I2C y pantalla OLED (128x64 píxeles)
+try:
+    # Configura los pines estándar de la Raspberry Pi para I2C (SCL y SDA)
+    i2c = busio.I2C(board.SCL, board.SDA)
+    # Enlaza el driver con la pantalla indicando la resolución de 128x64
+    oled = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c)
+except ValueError:
+    # Si los pines no responden o la pantalla está mal conectada, muestra error y aborta
+    print("Error: No se detecta el bus I2C. Revisa físicamente los pines.")
+    exit(1)
+
+# Limpieza inicial de la pantalla (apaga todos los píxeles al arrancar)
+oled.fill(0)
+oled.show()
+
+# Crear un lienzo virtual en blanco y negro ("1") con el tamaño exacto de la pantalla
+image = Image.new("1", (oled.width, oled.height))
+draw = ImageDraw.Draw(image) # Herramienta para "dibujar" texto, líneas y rectángulos en el lienzo
+font = ImageFont.load_default() # Carga la fuente de texto por defecto del sistema
+
+while True:
+    # --- RECOLECCIÓN DE DATOS (Lecturas nativas en memoria RAM, impacto = 0) ---
+    
+    # Identidad: Obtiene el nombre del equipo en la red (hostname) y lo pone en mayúsculas
+    hostname = os.uname()[1].upper()
+    # Identificación visual simple basada en si el nombre contiene la palabra "master"
+    modelo_rpi = "RPi 4B" if "master" in hostname.lower() else "RPi 3B+"
+
+    # Obtener IP local de forma ultra-pura (Evita abrir subprocesos lentos de Bash)
+    try:
+        # Crea un socket UDP virtual
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Intenta una conexión falsa hacia el router/gateway para que el sistema le asigne la IP de salida
+        s.connect(("192.168.100.1", 80)) 
+        ip = s.getsockname()[0] # Extrae la dirección IP real de la interfaz activa
+        s.close()
+    except:
+        # Si no hay red o falla la conexión, por defecto muestra la IP de bucle local
+        ip = "127.0.0.1"
+
+    # Carga de CPU: Obtiene el promedio de procesos en cola en el último minuto (load1)
+    load1, _, _ = os.getloadavg()
+
+    # Temperatura del procesador: Lee directamente el sensor térmico del chip (SoC)
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            temp_raw = int(f.read()) # Da un valor como 45000
+            temperatura = temp_raw / 1000.0 # Lo convierte a grados Celsius (45.0°C)
+    except:
+        temperatura = 0.0
+
+    # Uso de memoria RAM: Lee el archivo del sistema /proc/meminfo
+    mem_total = 0
+    mem_avail = 0
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if "MemTotal" in line:
+                    mem_total = int(line.split()[1]) # Memoria total en Kilobytes
+                if "MemAvailable" in line:
+                    mem_avail = int(line.split()[1]) # Memoria libre/disponible en Kilobytes
+                    break # Ya tenemos lo que necesitamos, salimos del archivo
+        # Convierte los Kilobytes calculados a Gigabytes (GB)
+        mem_usada_gb = (mem_total - mem_avail) / 1024 / 1024
+        mem_total_gb = mem_total / 1024 / 1024
+    except:
+        mem_usada_gb, mem_total_gb = 0.0, 0.0
+
+    # --- RENDERIZADO GRÁFICO (Diseño estilo Data Center) ---
+    # Dibuja un rectángulo negro que cubre toda la pantalla para borrar los datos anteriores
+    draw.rectangle((0, 0, oled.width, oled.height), outline=0, fill=0)
+
+    # Fila 1: Encabezado con el Hostname (X=0, Y=0) y el modelo asignado (X=80, Y=0)
+    # fill=255 significa "encender píxel" (color blanco en estas pantallas)
+    draw.text((0, 0), f"- {hostname}", font=font, fill=255)
+    draw.text((80, 0), f"[{modelo_rpi}]", font=font, fill=255)
+    
+    # Fila 2: Línea divisoria horizontal decorativa justo debajo del encabezado (Y=13)
+    draw.line((0, 13, 128, 13), fill=255)
+
+    # Fila 3: Imprime la IP obtenida (X=0, Y=18)
+    draw.text((0, 18), f"IP  : {ip}", font=font, fill=255)
+
+    # Fila 4: Métricas de Carga de CPU (X=0, Y=33) y la Temperatura formateada (X=85, Y=33)
+    draw.text((0, 33), f"CPU : Load {load1:.2f}", font=font, fill=255)
+    draw.text((85, 33), f"{temperatura:.1f}C", font=font, fill=255)
+
+    # Fila 5: Estado de la memoria RAM consumida vs total en GB (X=0, Y=48)
+    draw.text((0, 48), f"RAM : {mem_usada_gb:.1f} / {mem_total_gb:.1f} GB", font=font, fill=255)
+
+    # Pasa el lienzo de imágenes de la memoria a la estructura de la pantalla OLED
+    oled.image(image)
+    # Envía físicamente la ráfaga de datos a la pantalla a través de I2C para actualizar los píxeles
+    oled.show()
+
+    # Pausa el script durante 5 segundos antes de volver a leer los datos y actualizar
+    time.sleep(5)
+
+
+3. Configuración del Servicio (/etc/systemd/system/rpi-display.service)
+
+# Abre (o crea) el archivo de configuración para transformar el script en un servicio automático de fondo
+
+sudo nano /etc/systemd/system/rpi-display.service
+
+Ini, TOML
+[Unit]
+Description=Servicio de Monitoreo OLED para Nodo K3s
+# Asegura que el script no intente arrancar hasta que los servicios de red estén listos
+After=network.target
+
+[Service]
+# Tipo de servicio básico que ejecuta un comando continuo en primer plano
+Type=simple
+# Ruta absoluta hacia el ejecutable de Python3 y el script que acabamos de comentar
+ExecStart=/usr/bin/python3 /opt/display_node.py
+# Si el script falla o se cierra por algún error, el sistema operativo lo reiniciará automáticamente
+Restart=always
+# Tiempo de espera (5 segundos) antes de intentar reiniciar el servicio si este se cae
+RestartSec=5
+
+[Install]
+# Vincula el servicio al modo multiusuario estándar (asegura que inicie automáticamente al arrancar la Pi)
+WantedBy=multi-user.target
+
+4. Comandos de Activación del Servicio
+
+# Fuerza a Systemd a escanear la carpeta de servicios para que reconozca el nuevo archivo 'rpi-display.service'
+
+sudo systemctl daemon-reload
+
+# Habilita el servicio para que se ejecute de forma automática cada vez que la Raspberry Pi se encienda
+
+sudo systemctl enable rpi-display.service
+
+# Arranca el servicio de monitoreo inmediatamente en segundo plano sin necesidad de reiniciar la máquina
+
+sudo systemctl start rpi-display.service
